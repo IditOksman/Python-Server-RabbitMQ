@@ -1,67 +1,127 @@
-# main.py
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 import pika
-import asyncio
-from concurrent.futures import ThreadPoolExecutor
+import random
+import time
+from datetime import datetime
 import json
+import asyncio
 
 app = FastAPI()
 
-origins = ["http://localhost", "http://localhost:8080"]
-myDataObject = {
-    "name":'ilay', 
-    "age": 11
+NEWS_SCHEMA = {
+    "categories": ["Technology", "Business", "World", "Science"],
+    "keywords": {
+        "Technology": ["AI", "Blockchain", "Cybersecurity", "Cloud", "5G", "IoT"],
+        "Business": ["Stocks", "Economy", "Startup", "Market", "Investment", "Trade"],
+        "World": ["Politics", "Climate", "Diplomacy", "International", "Summit", "Treaty"],
+        "Science": ["Research", "Discovery", "Space", "Medicine", "Physics", "Biology"]
+    },
+    "templates": {
+        "Technology": {
+            "titles": [
+                "New breakthrough in {tech}",
+                "Major company announces {tech} innovation",
+                "Revolutionary {tech} development"
+            ],
+            "contents": [
+                "Scientists have made a breakthrough in {tech} technology that could revolutionize the industry.",
+                "A leading tech company has announced new developments in {tech}.",
+                "Experts predict that recent {tech} advances will change the future."
+            ]
+        },
+        "Business": {
+            "titles": [
+                "Market surge in {tech}",
+                "New investment opportunity in {tech}",
+                "Economic changes affect {tech}"
+            ],
+            "contents": [
+                "Investors are showing increased interest in {tech} markets.",
+                "Economic analysts predict growth in {tech} sector.",
+                "Major developments in {tech} impact global markets."
+            ]
+        },
+        "World": {
+            "titles": [
+                "Global summit addresses {tech}",
+                "International cooperation on {tech}",
+                "World leaders discuss {tech}"
+            ],
+            "contents": [
+                "Nations gather to address {tech} in landmark meeting.",
+                "International community focuses on {tech} solutions.",
+                "Global initiative launched to tackle {tech}."
+            ]
+        },
+        "Science": {
+            "titles": [
+                "Scientists discover new {tech}",
+                "Breakthrough in {tech} research",
+                "Revolutionary {tech} findings"
+            ],
+            "contents": [
+                "Research team announces major discovery in {tech}.",
+                "New study reveals breakthrough in {tech} understanding.",
+                "Scientific community excited about {tech} developments."
+            ]
+        }
+    }
 }
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+def generate_news_item():
+    category = random.choice(NEWS_SCHEMA["categories"])
+    keywords = random.sample(NEWS_SCHEMA["keywords"][category], k=random.randint(2, 4))
+    
+    template = NEWS_SCHEMA["templates"][category]
+    title = random.choice(template["titles"]).format(tech=random.choice(keywords))
+    content = random.choice(template["contents"]).format(tech=random.choice(keywords))
+    
+    news_item = {
+        "title": title,
+        "content": content,
+        "category": category,
+        "timestamp": datetime.now().isoformat(),
+        "keywords": keywords
+    }
+    
+    return news_item
 
 def send_to_rabbitmq(message):
-    connection = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
-    channel = connection.channel()
-    
-    channel.queue_declare(queue='request_queue')
-    
-    channel.basic_publish(exchange='',
-                         routing_key='request_queue',
-                         body=message)
-    
-    connection.close()
+    try:
+        connection = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
+        channel = connection.channel()
+        
+        # Declare queue
+        channel.queue_declare(
+            queue='news_queue',
+            durable=False
+        )
+        
+        # Publish message directly to queue
+        channel.basic_publish(
+            exchange='',  # Use default exchange
+            routing_key='news_queue',  # Use queue name as routing key
+            body=json.dumps(message),
+           
+        )
+        
+        print(f"Published news: {message['title']}")
+    except Exception as e:
+        print(f"Error publishing message: {e}")
+    finally:
+        connection.close()
 
-def consume_from_rabbitmq():
-    connection = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
-    channel = connection.channel()
-    
-    channel.queue_declare(queue='request_queue')
-    
-    # Get one message and close the connection
-    method_frame, header_frame, body = channel.basic_get(queue='request_queue', auto_ack=True)
-    
-    connection.close()
-    
-    if method_frame:
-        return body.decode()
-    return None
+async def news_generator():
+    print("News Generator Started...")
+    while True:
+        news_item = generate_news_item()
+        send_to_rabbitmq(news_item)
+        await asyncio.sleep(random.uniform(5, 10))
 
-@app.get("/")
-async def root():
-    # Send message to RabbitMQ
-    message = json.dumps(myDataObject)
-    send_to_rabbitmq(message)
-    
-    # Use ThreadPoolExecutor to run the blocking RabbitMQ consumer in a separate thread
-    with ThreadPoolExecutor() as executor:
-        # Wait a bit to ensure the message is in the queue
-        await asyncio.sleep(0.1)
-        # Consume the message
-        received_message = await asyncio.get_event_loop().run_in_executor(executor, consume_from_rabbitmq)
-    
-    if received_message:
-        return received_message
-    return "No message received"
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(news_generator())
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
